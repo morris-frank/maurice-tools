@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# setup - Bootstrap maurice-tools installation
+# Responsibilities:
+#   - Check Homebrew
+#   - Install/verify dependencies
+#   - Install Python runtime dependencies
+#   - Install Finder Quick Actions
+#   - Create config directory
+#   - Ask for missing API keys
+#   - Store keys in macOS Keychain
+#   - Run doctor
+
+# Determine installation paths
+if [[ -n "${MAURICE_ROOT:-}" ]]; then
+    readonly LIBEXEC="$MAURICE_ROOT/libexec"
+else
+    readonly BIN="${0%/*}"
+    readonly LIBEXEC="${BIN%/*}/libexec"
+fi
+
+# Source shared helpers
+# shellcheck source=./shared_helpers.sh
+source "$LIBEXEC/shared_helpers.sh"
+
+check_macos
+
+info "Setting up Maurice Tools..."
+echo
+
+# Step 1: Check Homebrew
+info "Step 1: Checking Homebrew installation..."
+if check_homebrew; then
+    success "Homebrew is installed at: $(get_brew_prefix)"
+else
+    error "Homebrew is not installed"
+    info "Install Homebrew from: https://brew.sh"
+    exit 1
+fi
+echo
+
+# Step 2: Install system dependencies
+info "Step 2: Installing system dependencies..."
+
+REQUIRED_FORMULAE=(
+    "python@3.12"
+    "uv"
+    "ffmpeg"
+    "jq"
+)
+
+for formula in "${REQUIRED_FORMULAE[@]}"; do
+    if brew_formula_installed "$formula"; then
+        success "$formula is installed"
+    else
+        info "Installing $formula..."
+        if brew install "$formula"; then
+            success "$formula installed successfully"
+        else
+            error "Failed to install $formula"
+            exit 1
+        fi
+    fi
+done
+echo
+
+# Step 3: Ensure config directory exists
+info "Step 3: Creating configuration directory..."
+ensure_config_dir
+success "Config directory ready at: $(get_config_dir)"
+echo
+
+# Step 4: Create default config if it doesn't exist
+info "Step 4: Creating default configuration..."
+CONFIG_FILE=$(get_config_file)
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    cat > "$CONFIG_FILE" << 'EOF'
+# Maurice Tools Configuration
+# Located at ~/.config/maurice-tools/config.toml
+
+[transcription]
+default_language = "en"
+output_dir = "~/Transcriptions"
+preferred_model = "whisper-1"
+overwrite_policy = "prompt"  # Options: prompt, always, never
+
+[providers]
+# Default provider for transcription
+# Options: openai, deepgram
+preferred = "openai"
+EOF
+    success "Default configuration created at: $CONFIG_FILE"
+else
+    success "Configuration already exists at: $CONFIG_FILE"
+fi
+echo
+
+# Step 5: Setup Python environment
+info "Step 5: Setting up Python environment..."
+
+# Check for uv
+if ! command_exists uv; then
+    error "uv is not available. Please restart your shell and run setup again."
+    exit 1
+fi
+
+# Determine project root for pyproject.toml
+if [[ -n "${MAURICE_ROOT:-}" ]]; then
+    PROJECT_ROOT="$MAURICE_ROOT"
+elif [[ -f "${0%/*}/../pyproject.toml" ]]; then
+    PROJECT_ROOT="${0%/*}/.."
+else
+    # Default to Homebrew Cellar location
+    PROJECT_ROOT="$(get_brew_prefix)/opt/maurice-tools"
+fi
+
+if [[ -f "$PROJECT_ROOT/pyproject.toml" ]]; then
+    info "Installing Python dependencies with uv..."
+    if uv pip install --system -r "$PROJECT_ROOT/pyproject.toml" 2>/dev/null || \
+       (cd "$PROJECT_ROOT" && uv pip install --system -e .) 2>/dev/null || \
+       pip3 install -e "$PROJECT_ROOT" 2>/dev/null; then
+        success "Python dependencies installed"
+    else
+        warn "Could not install Python dependencies automatically"
+        info "Try running: pip3 install openai deepgram-sdk pydub"
+    fi
+else
+    warn "pyproject.toml not found at $PROJECT_ROOT"
+    info "Installing core Python packages manually..."
+    pip3 install --user openai deepgram-sdk pydub 2>/dev/null || true
+fi
+echo
+
+# Step 6: Ask for API keys
+info "Step 6: API Key Configuration"
+echo "Maurice Tools uses macOS Keychain to securely store API keys."
+echo
+
+ask_for_api_key() {
+    local provider="$1"
+    local service="maurice.${provider}.api_key"
+    
+    if secret_exists "$service"; then
+        success "$provider API key is already configured"
+        return 0
+    fi
+    
+    echo -n "Enter your $provider API key (or press Enter to skip): "
+    read -r api_key
+    
+    if [[ -n "$api_key" ]]; then
+        if "$LIBEXEC/secrets-set" "$provider" <<< "$api_key"; then
+            success "$provider API key stored securely"
+        else
+            error "Failed to store $provider API key"
+        fi
+    else
+        info "Skipped $provider API key configuration"
+        info "You can set it later with: maurice secret set $provider"
+    fi
+}
+
+ask_for_api_key "openai"
+ask_for_api_key "deepgram"
+echo
+
+# Step 7: Install Finder Quick Actions
+info "Step 7: Installing Finder Quick Actions..."
+
+install_quick_action() {
+    local action_name="$1"
+    local workflow_dir="${0%/*}/../workflows/${action_name}.workflow"
+    local services_dir
+    services_dir=$(get_services_dir)
+    
+    if [[ ! -d "$workflow_dir" ]]; then
+        warn "Quick Action bundle not found: $workflow_dir"
+        return 1
+    fi
+    
+    # Create Services directory if needed
+    mkdir -p "$services_dir"
+    
+    # Copy workflow
+    local target="$services_dir/${action_name}.workflow"
+    if [[ -d "$target" ]]; then
+        rm -rf "$target"
+    fi
+    
+    if cp -R "$workflow_dir" "$target"; then
+        success "Quick Action installed: $action_name"
+    else
+        warn "Failed to install Quick Action: $action_name"
+        return 1
+    fi
+}
+
+# Install Transcribe Audio Quick Action
+install_quick_action "Transcribe Audio" || true
+echo
+
+# Step 8: Run doctor
+info "Step 8: Running diagnostics..."
+echo
+
+if "$LIBEXEC/doctor"; then
+    echo
+    success "Setup complete! Maurice Tools is ready to use."
+else
+    warn "Setup completed with some issues. Please review the diagnostics above."
+fi
+echo
+
+info "Quick start:"
+echo "  maurice doctor          - Check system health"
+echo "  maurice transcribe <file> - Transcribe an audio file"
+echo "  maurice secret set openai - Configure OpenAI API key"
+echo

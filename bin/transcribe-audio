@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# transcribe-audio - Direct entrypoint for audio transcription
+# Can be used standalone or from Finder Quick Actions
+# Usage: transcribe-audio <audio-file>...
+
+# Determine installation paths
+if [[ -n "${MAURICE_ROOT:-}" ]]; then
+    readonly LIBEXEC="$MAURICE_ROOT/libexec"
+else
+    # Standard Homebrew paths
+    readonly BIN="${0%/*}"
+    readonly LIBEXEC="${BIN%/*}/libexec"
+fi
+
+# Source shared helpers
+# shellcheck source=../libexec/shared_helpers.sh
+source "$LIBEXEC/shared_helpers.sh"
+
+# Check if any files were provided
+if [[ $# -eq 0 ]]; then
+    error "No audio files specified"
+    echo "Usage: transcribe-audio <audio-file>..."
+    exit 1
+fi
+
+# Validate all files exist before processing
+for file in "$@"; do
+    if [[ ! -f "$file" ]]; then
+        error "File not found: $file"
+        exit 1
+    fi
+    
+    # Check if file is a valid audio format
+    local ext="${file##*.}"
+    ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
+    
+    case "$ext" in
+        m4a|mp3|wav|mp4|mov|aac|flac|m4p|m4v|webm)
+            : # Valid audio/video format
+            ;;
+        *)
+            warn "Unrecognized extension .$ext for: $file"
+            warn "Will attempt transcription anyway..."
+            ;;
+    esac
+done
+
+# Delegate to Python implementation
+exec "$LIBEXEC/transcribe.py" "$@"

@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# doctor - Diagnostic tool for maurice-tools
+# Checks all components and dependencies
+
+# Determine installation paths
+if [[ -n "${MAURICE_ROOT:-}" ]]; then
+    readonly LIBEXEC="$MAURICE_ROOT/libexec"
+else
+    readonly BIN="${0%/*}"
+    readonly LIBEXEC="${BIN%/*}/libexec"
+fi
+
+# Source shared helpers
+# shellcheck source=./shared_helpers.sh
+source "$LIBEXEC/shared_helpers.sh"
+
+check_macos
+
+# Track overall health
+ALL_CHECKS_PASSED=true
+
+# Check result tracking
+check_pass() {
+    echo -e "  ${GREEN}✓${NC} $1"
+}
+
+check_fail() {
+    echo -e "  ${RED}✗${NC} $1"
+    ALL_CHECKS_PASSED=false
+}
+
+check_warn() {
+    echo -e "  ${YELLOW}!${NC} $1"
+}
+
+info "Maurice Tools Diagnostics"
+info "========================="
+echo
+
+# Check 1: Homebrew
+info "Checking Homebrew installation..."
+if check_homebrew; then
+    check_pass "Homebrew is installed ($(get_brew_prefix))"
+else
+    check_fail "Homebrew is not installed"
+fi
+echo
+
+# Check 2: Required Homebrew formulae
+info "Checking required Homebrew formulae..."
+
+REQUIRED_FORMULAE=(
+    "python@3.12:Python 3.12"
+    "uv:UV (Python package manager)"
+    "ffmpeg:FFmpeg"
+    "jq:jq (JSON processor)"
+)
+
+for item in "${REQUIRED_FORMULAE[@]}"; do
+    IFS=':' read -r formula description <<< "$item"
+    if brew_formula_installed "$formula"; then
+        check_pass "$description ($formula)"
+    else
+        check_fail "$description ($formula) - Run: brew install $formula"
+    fi
+done
+echo
+
+# Check 3: Python executable
+info "Checking Python environment..."
+
+if command_exists python3; then
+    PYTHON_VERSION=$(python3 --version 2>&1)
+    check_pass "Python available ($PYTHON_VERSION)"
+    
+    # Check if it's 3.12+
+    if python3 -c "import sys; exit(0 if sys.version_info >= (3, 12) else 1)" 2>/dev/null; then
+        check_pass "Python version is 3.12 or newer"
+    else
+        check_warn "Python version may be older than 3.12"
+    fi
+else
+    check_fail "Python 3 not found in PATH"
+fi
+echo
+
+# Check 4: Python packages
+info "Checking Python packages..."
+
+PYTHON_PACKAGES=(
+    "openai:OpenAI SDK"
+    "deepgram:Deepgram SDK"
+    "pydub:Pydub (audio processing)"
+)
+
+for item in "${PYTHON_PACKAGES[@]}"; do
+    IFS=':' read -r package description <<< "$item"
+    if python_package_installed "$package"; then
+        check_pass "$description ($package)"
+    else
+        check_fail "$description ($package) - Run: pip3 install $package"
+    fi
+done
+echo
+
+# Check 5: ffmpeg
+info "Checking ffmpeg..."
+if command_exists ffmpeg; then
+    FFMPEG_VERSION=$(ffmpeg -version 2>&1 | head -n1 | cut -d' ' -f3)
+    check_pass "ffmpeg available (version $FFMPEG_VERSION)"
+else
+    check_fail "ffmpeg not found - Run: brew install ffmpeg"
+fi
+echo
+
+# Check 6: jq
+info "Checking jq..."
+if command_exists jq; then
+    JQ_VERSION=$(jq --version 2>&1)
+    check_pass "jq available ($JQ_VERSION)"
+else
+    check_fail "jq not found - Run: brew install jq"
+fi
+echo
+
+# Check 7: Keychain secrets
+info "Checking Keychain secrets..."
+
+SECRET_PROVIDERS=("openai" "deepgram" "anthropic")
+
+for provider in "${SECRET_PROVIDERS[@]}"; do
+    service="maurice.${provider}.api_key"
+    if secret_exists "$service"; then
+        check_pass "API key configured: $provider"
+    else
+        check_warn "API key not configured: $provider"
+        info "      Run: maurice secret set $provider"
+    fi
+done
+echo
+
+# Check 8: Configuration file
+info "Checking configuration..."
+
+CONFIG_FILE=$(get_config_file)
+if [[ -f "$CONFIG_FILE" ]]; then
+    check_pass "Configuration file exists ($CONFIG_FILE)"
+    
+    # Try to read a value to verify it's valid TOML-ish
+    if read_config transcription default_language "" &>/dev/null; then
+        check_pass "Configuration file is readable"
+    else
+        check_warn "Configuration file may have issues"
+    fi
+else
+    check_fail "Configuration file not found"
+    info "      Run: maurice setup"
+fi
+echo
+
+# Check 9: Config directory structure
+info "Checking config directory..."
+CONFIG_DIR=$(get_config_dir)
+if [[ -d "$CONFIG_DIR" ]]; then
+    check_pass "Config directory exists ($CONFIG_DIR)"
+else
+    check_fail "Config directory not found"
+fi
+echo
+
+# Check 10: Finder Quick Actions
+info "Checking Finder Quick Actions..."
+
+if quick_action_installed "Transcribe Audio"; then
+    check_pass "Transcribe Audio Quick Action installed"
+else
+    check_warn "Transcribe Audio Quick Action not installed"
+    info "      Run: maurice setup"
+fi
+echo
+
+# Check 11: Installation paths
+info "Checking installation paths..."
+
+if [[ -n "${MAURICE_ROOT:-}" ]]; then
+    check_pass "MAURICE_ROOT is set ($MAURICE_ROOT)"
+else
+    check_pass "Using standard Homebrew paths"
+fi
+
+# Check libexec scripts exist
+REQUIRED_SCRIPTS=("setup" "doctor" "secrets-get" "secrets-set" "transcribe.py")
+for script in "${REQUIRED_SCRIPTS[@]}"; do
+    if [[ -f "$LIBEXEC/$script" ]]; then
+        check_pass "libexec/$script exists"
+    else
+        check_fail "libexec/$script not found"
+    fi
+done
+echo
+
+# Summary
+echo "========================="
+if $ALL_CHECKS_PASSED; then
+    success "All checks passed! Maurice Tools is healthy."
+    exit 0
+else
+    error "Some checks failed. Please review the issues above."
+    exit 1
+fi

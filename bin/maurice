@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Maurice - Main dispatcher for maurice-tools
+# Usage: maurice <command> [args...]
+
+readonly VERSION="0.1.0"
+readonly PROG="maurice"
+
+# Determine installation paths
+if [[ -n "${MAURICE_ROOT:-}" ]]; then
+    readonly LIBEXEC="$MAURICE_ROOT/libexec"
+    readonly BIN="$MAURICE_ROOT/bin"
+else
+    # Standard Homebrew paths
+    readonly BIN="${0%/*}"
+    readonly LIBEXEC="${BIN%/*}/libexec"
+fi
+
+# Source shared helpers
+# shellcheck source=../libexec/shared_helpers.sh
+source "$LIBEXEC/shared_helpers.sh"
+
+usage() {
+    cat <<EOF
+Maurice Tools v${VERSION}
+
+Usage: $PROG <command> [args...]
+
+Commands:
+    setup               Bootstrap installation and dependencies
+    doctor              Check system health and configuration
+    update              Update maurice-tools to latest version
+    secret set <name>   Store an API key in macOS Keychain
+    secret get <name>   Retrieve an API key from macOS Keychain
+    transcribe <file>   Transcribe audio file to text
+    version             Show version information
+    help                Show this help message
+
+Examples:
+    $PROG setup
+    $PROG doctor
+    $PROG secret set openai
+    $PROG transcribe ~/Downloads/recording.m4a
+    $PROG update
+
+Configuration: ~/.config/maurice-tools/config.toml
+EOF
+}
+
+main() {
+    local cmd="${1:-help}"
+
+    case "$cmd" in
+        setup)
+            exec "$LIBEXEC/setup" "${@:2}"
+            ;;
+        doctor)
+            exec "$LIBEXEC/doctor" "${@:2}"
+            ;;
+        update)
+            exec "$LIBEXEC/update" "${@:2}"
+            ;;
+        secret)
+            local subcmd="${2:-}"
+            case "$subcmd" in
+                set)
+                    exec "$LIBEXEC/secrets-set" "${@:3}"
+                    ;;
+                get)
+                    exec "$LIBEXEC/secrets-get" "${@:3}"
+                    ;;
+                *)
+                    error "Usage: $PROG secret {set|get} <name>"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        transcribe)
+            exec "$LIBEXEC/transcribe.py" "${@:2}"
+            ;;
+        version|--version|-v)
+            echo "Maurice Tools v${VERSION}"
+            exit 0
+            ;;
+        help|--help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            error "Unknown command: $cmd"
+            echo
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

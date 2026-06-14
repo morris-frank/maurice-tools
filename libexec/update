@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# update - Update maurice-tools to latest version
+# Usage: maurice update
+
+# Determine installation paths
+if [[ -n "${MAURICE_ROOT:-}" ]]; then
+    readonly LIBEXEC="$MAURICE_ROOT/libexec"
+else
+    readonly BIN="${0%/*}"
+    readonly LIBEXEC="${BIN%/*}/libexec"
+fi
+
+# Source shared helpers
+# shellcheck source=./shared_helpers.sh
+source "$LIBEXEC/shared_helpers.sh"
+
+check_macos
+
+info "Updating Maurice Tools..."
+echo
+
+# Step 1: Update Homebrew
+info "Step 1: Updating Homebrew..."
+if check_homebrew; then
+    if brew update; then
+        success "Homebrew updated"
+    else
+        warn "Homebrew update had issues (continuing anyway)"
+    fi
+else
+    error "Homebrew not found"
+    exit 1
+fi
+echo
+
+# Step 2: Upgrade maurice-tools formula
+info "Step 2: Upgrading maurice-tools..."
+if brew upgrade maurice-tools 2>/dev/null || true; then
+    success "maurice-tools upgraded"
+else
+    info "Already on latest version or tap not configured"
+fi
+echo
+
+# Step 3: Reinstall Quick Actions if needed
+info "Step 3: Checking Quick Actions..."
+
+install_quick_action() {
+    local action_name="$1"
+    local workflow_dir="${0%/*}/../workflows/${action_name}.workflow"
+    local services_dir
+    services_dir=$(get_services_dir)
+
+    if [[ ! -d "$workflow_dir" ]]; then
+        warn "Quick Action bundle not found: $workflow_dir"
+        return 1
+    fi
+
+    mkdir -p "$services_dir"
+
+    local target="$services_dir/${action_name}.workflow"
+    if [[ -d "$target" ]]; then
+        rm -rf "$target"
+    fi
+
+    if cp -R "$workflow_dir" "$target"; then
+        success "Quick Action updated: $action_name"
+    else
+        warn "Failed to update Quick Action: $action_name"
+        return 1
+    fi
+}
+
+# Reinstall Quick Actions to ensure they're up to date
+install_quick_action "Transcribe Audio" || true
+echo
+
+# Step 4: Run doctor
+info "Step 4: Running diagnostics..."
+echo
+
+if "$LIBEXEC/doctor"; then
+    echo
+    success "Update complete! Maurice Tools is up to date."
+else
+    warn "Update completed with some issues. Please review the diagnostics above."
+fi
+echo
