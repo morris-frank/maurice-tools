@@ -5,25 +5,9 @@ class MauriceTools < Formula
   sha256 "PLACEHOLDER_SHA256"
   license "MIT"
 
-  depends_on "python@3.12"
-  depends_on "uv"
+  # Pure bash implementation - no Python runtime dependencies
   depends_on "ffmpeg"
   depends_on "jq"
-
-  resource "openai" do
-    url "https://files.pythonhosted.org/packages/source/o/openai/openai-1.0.0.tar.gz"
-    sha256 "PLACEHOLDER"
-  end
-
-  resource "deepgram-sdk" do
-    url "https://files.pythonhosted.org/packages/source/d/deepgram-sdk/deepgram-sdk-3.0.0.tar.gz"
-    sha256 "PLACEHOLDER"
-  end
-
-  resource "pydub" do
-    url "https://files.pythonhosted.org/packages/source/p/pydub/pydub-0.25.1.tar.gz"
-    sha256 "PLACEHOLDER"
-  end
 
   def install
     # Install bin/ executables
@@ -38,12 +22,6 @@ class MauriceTools < Formula
     # Install completions
     bash_completion.install "completions/maurice.bash" => "maurice"
     zsh_completion.install "completions/maurice.zsh" => "_maurice"
-
-    # Set up Python environment
-    venv = virtualenv_create(libexec, "python3.12")
-
-    # Install Python dependencies
-    venv.pip_install resources
 
     # Create wrapper scripts that set MAURICE_ROOT
     (bin/"maurice").write_env_script libexec/"maurice",
@@ -66,7 +44,6 @@ class MauriceTools < Formula
 
       To configure API keys:
         maurice secret set openai
-        maurice secret set deepgram
 
       Documentation: https://github.com/morris-frank/maurice-tools
     EOS

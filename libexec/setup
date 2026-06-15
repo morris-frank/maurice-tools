@@ -44,21 +44,20 @@ echo
 info "Step 2: Installing system dependencies..."
 
 REQUIRED_FORMULAE=(
-    "python@3.12"
-    "uv"
-    "ffmpeg"
-    "jq"
+    "ffmpeg:FFmpeg (audio processing)"
+    "jq:jq (JSON processor)"
 )
 
-for formula in "${REQUIRED_FORMULAE[@]}"; do
+for item in "${REQUIRED_FORMULAE[@]}"; do
+    IFS=':' read -r formula description <<< "$item"
     if brew_formula_installed "$formula"; then
-        success "$formula is installed"
+        success "$description is installed"
     else
-        info "Installing $formula..."
+        info "Installing $description..."
         if brew install "$formula"; then
-            success "$formula installed successfully"
+            success "$description installed successfully"
         else
-            error "Failed to install $formula"
+            error "Failed to install $description"
             exit 1
         fi
     fi
@@ -81,15 +80,15 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # Located at ~/.config/maurice-tools/config.toml
 
 [transcription]
+# Default language for transcription (ISO 639-1 code)
+# Examples: en, de, es, fr, ja
 default_language = "en"
-output_dir = "~/Transcriptions"
-preferred_model = "whisper-1"
-overwrite_policy = "prompt"  # Options: prompt, always, never
 
-[providers]
-# Default provider for transcription
-# Options: openai, deepgram
-preferred = "openai"
+# Where to save transcription output files
+output_dir = "~/Transcriptions"
+
+# Overwrite policy for existing files: prompt, always, never
+overwrite_policy = "prompt"
 EOF
     success "Default configuration created at: $CONFIG_FILE"
 else
@@ -97,39 +96,13 @@ else
 fi
 echo
 
-# Step 5: Setup Python environment
-info "Step 5: Setting up Python environment..."
-
-# Check for uv
-if ! command_exists uv; then
-    error "uv is not available. Please restart your shell and run setup again."
+# Step 5: Verify curl is available
+info "Step 5: Verifying curl..."
+if command_exists curl; then
+    success "curl is installed ($(curl --version | head -n1))"
+else
+    error "curl is not available (required for API calls)"
     exit 1
-fi
-
-# Determine project root for pyproject.toml
-if [[ -n "${MAURICE_ROOT:-}" ]]; then
-    PROJECT_ROOT="$MAURICE_ROOT"
-elif [[ -f "${0%/*}/../pyproject.toml" ]]; then
-    PROJECT_ROOT="${0%/*}/.."
-else
-    # Default to Homebrew Cellar location
-    PROJECT_ROOT="$(get_brew_prefix)/opt/maurice-tools"
-fi
-
-if [[ -f "$PROJECT_ROOT/pyproject.toml" ]]; then
-    info "Installing Python dependencies with uv..."
-    if uv pip install --system -r "$PROJECT_ROOT/pyproject.toml" 2>/dev/null || \
-       (cd "$PROJECT_ROOT" && uv pip install --system -e .) 2>/dev/null || \
-       pip3 install -e "$PROJECT_ROOT" 2>/dev/null; then
-        success "Python dependencies installed"
-    else
-        warn "Could not install Python dependencies automatically"
-        info "Try running: pip3 install openai deepgram-sdk pydub"
-    fi
-else
-    warn "pyproject.toml not found at $PROJECT_ROOT"
-    info "Installing core Python packages manually..."
-    pip3 install --user openai deepgram-sdk pydub 2>/dev/null || true
 fi
 echo
 
@@ -163,7 +136,6 @@ ask_for_api_key() {
 }
 
 ask_for_api_key "openai"
-ask_for_api_key "deepgram"
 echo
 
 # Step 7: Install Finder Quick Actions

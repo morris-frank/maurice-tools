@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+# transcribe - OpenAI audio transcription with chunking for large files
+# Adapted for maurice-tools: uses Keychain for API keys, config for settings
+set -euo pipefail
+
+# Determine installation paths
+if [[ -n "${MAURICE_ROOT:-}" ]]; then
+    readonly LIBEXEC="$MAURICE_ROOT/libexec"
+else
+    readonly BIN="${0%/*}"
+    readonly LIBEXEC="${BIN%/*}/libexec"
+fi
+
+# Source shared helpers
+# shellcheck source=./shared_helpers.sh
+source "$LIBEXEC/shared_helpers.sh"
+
+# Configuration
+verbose=false
+MODEL="gpt-4o-transcribe"
+MAX_BYTES=$((25 * 1024 * 1024))  # 25MB OpenAI limit
+MAX_DURATION=1400                 # ~23 minutes
+TARGET_DURATION=1320              # Target 22 minutes for safety
+AAC_BITRATE="64k"
+SAFETY_NUM=85                     # 85% safety factor for size
+SAFETY_DEN=100
+
+# Defaults
+OUTPUT_DIR=""
+LANGUAGE=""
+
+# Logging helpers for this script (extend shared_helpers)
+say() { info "$@"; }
+ok() { success "$@"; }
+
+die() {
+    error "$@"
+    exit 1
+}
+
+file_size() {
+    stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null
+}
+
+require_cmd() {
+    for cmd in "$@"; do
+        if ! command_exists "$cmd"; then
+            die "Required command not found: $cmd"
+        fi
+    done
+}
+
+run_quiet() {
+    local name="$1"
+    shift
+    if $verbose; then
+        info "[$name] $*"
+        "$@"
+    else
+        "$@" 2>/dev/null
+    fi
+}
+
+# Usage
+usage() {
+    cat <<EOF
+Usage: transcribe [-v] [-o output_dir] [-l language] INPUT_AUDIO [OUTPUT_BASENAME]
+
+Options:
+    -v, --verbose       Verbose output
+    -o, --output-dir    Output directory (default: from config or ~/Transcriptions)
+    -l, --language      Language code (e.g., 'en', 'de', 'es')
+    -h, --help          Show this help
+
+Examples:
+    transcribe recording.m4a
+    transcribe -v -o ~/Documents recording.m4a meeting_notes
+    transcribe -l de interview.m4a
+EOF
+    exit "${1:-1}"
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v|--verbose) verbose=true; shift ;;
+        -o|--output-dir) OUTPUT_DIR="$2"; shift 2 ;;
+        -l|--language) LANGUAGE="$2"; shift 2 ;;
+        -h|--help) usage 0 ;;
+        -*) die "Unknown option: $1" ;;
+        *) break ;;
+    esac
+done
+
+[[ $# -ge 1 && $# -le 2 ]] || usage
+
+INPUT="$1"
+[[ -f "$INPUT" ]] || die "File not found: $INPUT"
+
+# Get API key from Keychain
+get_api_key() {
+    local service="maurice.openai.api_key"
+    local account
+    account=$(get_macos_username)
+    
+    local api_key
+    api_key=$(security find-generic-password -s "$service" -a "$account" -w 2>/dev/null) || true
+    
+    if [[ -z "$api_key" ]]; then
+        die "OpenAI API key not found in Keychain"
+        info "Set it with: maurice secret set openai"
+        exit 1
+    fi
+    
+    echo "$api_key"
+}
+
+OPENAI_API_KEY=$(get_api_key)
+export OPENAI_API_KEY
+
+# Check required commands
+require_cmd jq ffmpeg ffprobe curl
+
+# Determine output base name
+if [[ -n "${2:-}" ]]; then
+    OUT_BASE="$2"
+else
+    # Use config output_dir or default
+    if [[ -z "$OUTPUT_DIR" ]]; then
+        config_dir=$(read_config transcription output_dir "")
+        if [[ -n "$config_dir" ]]; then
+            OUTPUT_DIR=$(expand_path "$config_dir")
+        else
+            OUTPUT_DIR="${HOME}/Transcriptions"
+        fi
+    fi
+    
+    # Create output directory
+    mkdir -p "$OUTPUT_DIR"
+    
+    OUT_BASE="${OUTPUT_DIR}/$(basename "${INPUT%.*}")"
+fi
+
+OUT_JSON="${OUT_BASE}.json"
+OUT_TXT="${OUT_BASE}.txt"
+PARTS_DIR="${OUT_BASE}.parts"
+
+# Cleanup function
+cleanup() {
+    if [[ -d "$PARTS_DIR" ]]; then
+        rm -rf "$PARTS_DIR"
+    fi
+}
+trap cleanup EXIT
+
+# Transcribe a single file
+transcribe_one() {
+    local in_file="$1"
+    local out_json="$2"
+    
+    local curl_opts=(-sS --fail-with-body)
+    if $verbose; then
+        curl_opts=(-sS --fail-with-body -v)
+    fi
+    
+    curl "${curl_opts[@]}" https://api.openai.com/v1/audio/transcriptions \
+        -H "Authorization: Bearer $OPENAI_API_KEY" \
+        -F "file=@${in_file}" \
+        -F "model=${MODEL}" \
+        -F "response_format=json" \
+        ${LANGUAGE:+-F "language=${LANGUAGE}"} \
+        >"$out_json"
+}
+
+# Get duration in seconds
+duration_seconds_int() {
+    local file="$1"
+    local dur
+    dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$file")
+    awk -v d="$dur" 'BEGIN { printf "%d\n", (d < 1 ? 1 : int(d + 0.999999)) }'
+}
+
+# Calculate chunk size based on target bitrate
+size_based_chunk_seconds() {
+    local kbps
+    kbps=$(echo "$AAC_BITRATE" | sed 's/k$//')
+    awk -v max="$MAX_BYTES" -v kbps="$kbps" -v n="$SAFETY_NUM" -v d="$SAFETY_DEN" '
+        BEGIN {
+            bps = (kbps * 1000) / 8
+            c = int((max * n / d) / bps)
+            print (c < 30 ? 30 : c)
+        }'
+}
+
+# Main logic
+DURATION=$(duration_seconds_int "$INPUT")
+SIZE_BYTES=$(file_size "$INPUT")
+
+say "Input: ${INPUT##*/} (${DURATION}s, ${SIZE_BYTES} bytes)"
+
+# Small file: transcribe directly
+if (( SIZE_BYTES <= MAX_BYTES && DURATION <= MAX_DURATION )); then
+    say "Transcribing in one request..."
+    run_quiet "transcribe" transcribe_one "$INPUT" "$OUT_JSON" || die "Transcription failed"
+    jq -r '.text' "$OUT_JSON" >"$OUT_TXT"
+    ok "Saved: $OUT_TXT"
+    exit 0
+fi
+
+# Large file: chunk it
+mkdir -p "$PARTS_DIR"
+
+SIZE_SAFE_CHUNK=$(size_based_chunk_seconds)
+CHUNK_SECONDS=$(( SIZE_SAFE_CHUNK < TARGET_DURATION ? SIZE_SAFE_CHUNK : TARGET_DURATION ))
+
+(( CHUNK_SECONDS >= 30 )) || die "Chunk size too small: ${CHUNK_SECONDS}s"
+
+say "Chunking: ${CHUNK_SECONDS}s chunks · ${DURATION}s total"
+
+# Convert and segment
+run_quiet "segment" ffmpeg -v error -y -i "$INPUT" -ac 1 -c:a aac -b:a "$AAC_BITRATE" \
+    -f segment -segment_time "$CHUNK_SECONDS" -reset_timestamps 1 \
+    "${PARTS_DIR}/part_%04d.m4a" || die "ffmpeg segmentation failed"
+
+# Transcribe each chunk
+: >"$OUT_TXT"
+echo '[' >"$OUT_JSON"
+first=1
+chunk_num=0
+
+for part in "${PARTS_DIR}"/part_*.m4a; do
+    [[ -e "$part" ]] || continue
+    
+    ((chunk_num++))
+    part_json="${part%.m4a}.json"
+    part_txt="${part%.m4a}.txt"
+    
+    part_size=$(file_size "$part")
+    part_duration=$(duration_seconds_int "$part")
+    
+    # Safety checks
+    (( part_size <= MAX_BYTES )) || die "Chunk too large: $part (${part_size} bytes)"
+    (( part_duration <= MAX_DURATION )) || die "Chunk too long: $part (${part_duration}s)"
+    
+    say "Chunk $chunk_num: ${part_duration}s..."
+    run_quiet "chunk-$(basename "$part")" transcribe_one "$part" "$part_json" || die "Chunk failed: $part"
+    
+    # Extract text
+    jq -r '.text' "$part_json" >"$part_txt"
+    cat "$part_txt" >>"$OUT_TXT"
+    printf '\n' >>"$OUT_TXT"
+    
+    # Build combined JSON
+    (( first )) || echo ',' >>"$OUT_JSON"
+    first=0
+    cat "$part_json" >>"$OUT_JSON"
+done
+
+echo ']' >>"$OUT_JSON"
+ok "Saved: $OUT_TXT · $OUT_JSON ($chunk_num chunks)"

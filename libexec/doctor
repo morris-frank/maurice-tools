@@ -86,23 +86,14 @@ else
 fi
 echo
 
-# Check 4: Python packages
-info "Checking Python packages..."
-
-PYTHON_PACKAGES=(
-    "openai:OpenAI SDK"
-    "deepgram:Deepgram SDK"
-    "pydub:Pydub (audio processing)"
-)
-
-for item in "${PYTHON_PACKAGES[@]}"; do
-    IFS=':' read -r package description <<< "$item"
-    if python_package_installed "$package"; then
-        check_pass "$description ($package)"
-    else
-        check_fail "$description ($package) - Run: pip3 install $package"
-    fi
-done
+# Check 4: curl
+info "Checking curl..."
+if command_exists curl; then
+    CURL_VERSION=$(curl --version 2>&1 | head -n1)
+    check_pass "curl available ($CURL_VERSION)"
+else
+    check_fail "curl not found (required for API calls)"
+fi
 echo
 
 # Check 5: ffmpeg
@@ -191,7 +182,7 @@ else
 fi
 
 # Check libexec scripts exist
-REQUIRED_SCRIPTS=("setup" "doctor" "secrets-get" "secrets-set" "transcribe.py")
+REQUIRED_SCRIPTS=("setup" "doctor" "secrets-get" "secrets-set" "transcribe")
 for script in "${REQUIRED_SCRIPTS[@]}"; do
     if [[ -f "$LIBEXEC/$script" ]]; then
         check_pass "libexec/$script exists"

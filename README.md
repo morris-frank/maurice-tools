@@ -1,6 +1,14 @@
 # Maurice Tools
 
-A macOS CLI suite for audio transcription and utilities, distributed via Homebrew.
+A macOS CLI suite for audio transcription using OpenAI's API, distributed via Homebrew.
+
+## Features
+
+- **Large file support**: Automatically chunks audio files exceeding OpenAI's 25MB limit
+- **High accuracy**: Uses OpenAI's gpt-4o-transcribe model
+- **Secure**: API keys stored in macOS Keychain
+- **Integrated**: Finder Quick Actions for one-click transcription
+- **Fast**: Pure bash implementation using curl
 
 ## Installation
 
@@ -24,7 +32,7 @@ maurice setup
 # Check system health
 maurice doctor
 
-# Configure your API key
+# Configure your OpenAI API key
 maurice secret set openai
 
 # Transcribe an audio file
@@ -38,11 +46,11 @@ transcribe-audio ~/Downloads/recording.m4a
 
 | Command | Description |
 |---------|-------------|
-| `maurice setup` | Bootstrap installation, install dependencies, configure API keys |
+| `maurice setup` | Bootstrap installation and configure API keys |
 | `maurice doctor` | Check system health and configuration |
 | `maurice update` | Update to the latest version |
-| `maurice secret set <provider>` | Store an API key in macOS Keychain |
-| `maurice secret get <provider>` | Retrieve an API key (for scripts) |
+| `maurice secret set openai` | Store your OpenAI API key in macOS Keychain |
+| `maurice secret get openai` | Retrieve your API key (for scripts) |
 | `maurice transcribe <file>` | Transcribe audio to text |
 | `maurice version` | Show version information |
 | `maurice help` | Show help message |
@@ -55,25 +63,20 @@ Configuration is stored in `~/.config/maurice-tools/config.toml`:
 [transcription]
 default_language = "en"
 output_dir = "~/Transcriptions"
-preferred_model = "whisper-1"
 overwrite_policy = "prompt"  # Options: prompt, always, never
-
-[providers]
-preferred = "openai"  # Options: openai, deepgram
 ```
 
-## API Keys
+## API Key
 
-Maurice Tools stores API keys securely in the macOS Keychain. Supported providers:
+Maurice Tools stores your OpenAI API key securely in the macOS Keychain under the service name `maurice.openai.api_key`.
 
-- **OpenAI** (Whisper) - `maurice openai.api_key`
-- **Deepgram** - `maurice.deepgram.api_key`
-
-To set an API key:
+To set your API key:
 
 ```bash
 maurice secret set openai
 ```
+
+You can get an API key from [OpenAI's platform](https://platform.openai.com/api-keys).
 
 ## Finder Quick Actions
 
@@ -81,7 +84,7 @@ After running `maurice setup`, you can transcribe audio files directly from Find
 
 1. Right-click on an audio file
 2. Select "Quick Actions" → "Transcribe Audio"
-3. The transcription will be saved to your configured output directory
+3. The transcription will be saved as a `.txt` file next to the original
 
 ## Audio Formats
 
@@ -98,8 +101,9 @@ Supported formats (via ffmpeg):
 
 - macOS 12.0 or later
 - Homebrew
-- Python 3.12+
 - ffmpeg
+- jq
+- OpenAI API key
 
 ## Project Structure
 
@@ -114,13 +118,12 @@ maurice-tools/
 │   ├── doctor               # Diagnostics
 │   ├── secrets-get          # Read from Keychain
 │   ├── secrets-set          # Write to Keychain
-│   └── transcribe.py        # Python transcription backend
+│   └── transcribe           # Bash transcription backend
 ├── workflows/
 │   └── Transcribe Audio.workflow/  # Finder Quick Action
 ├── completions/
 │   ├── maurice.bash         # Bash completions
 │   └── maurice.zsh          # Zsh completions
-├── pyproject.toml           # Python dependencies
 ├── Brewfile                 # Homebrew dependencies
 ├── install.sh               # Alternative installer
 └── README.md
@@ -146,10 +149,9 @@ cd maurice-tools
 
 # Install dependencies
 brew bundle
-pip3 install -e .
 
 # Run diagnostics
-maurice doctor
+./bin/maurice doctor
 ```
 
 ## License

@@ -77,7 +77,7 @@ main() {
             esac
             ;;
         transcribe)
-            exec "$LIBEXEC/transcribe.py" "${@:2}"
+            exec "$LIBEXEC/transcribe" "${@:2}"
             ;;
         version|--version|-v)
             echo "Maurice Tools v${VERSION}"

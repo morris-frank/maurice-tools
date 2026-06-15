@@ -33,7 +33,7 @@ for file in "$@"; do
     fi
     
     # Check if file is a valid audio format
-    local ext="${file##*.}"
+    ext="${file##*.}"
     ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
     
     case "$ext" in
@@ -47,5 +47,14 @@ for file in "$@"; do
     esac
 done
 
-# Delegate to Python implementation
-exec "$LIBEXEC/transcribe.py" "$@"
+# Process each file
+exit_code=0
+for file in "$@"; do
+    info "Processing: $file"
+    if ! "$LIBEXEC/transcribe" "$file"; then
+        error "Failed to transcribe: $file"
+        exit_code=1
+    fi
+done
+
+exit $exit_code

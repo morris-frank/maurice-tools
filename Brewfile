@@ -4,16 +4,10 @@
 # Core dependencies
 tap "homebrew/bundle"
 
-# Python runtime
-brew "python@3.12"
-
-# Python package manager (faster than pip)
-brew "uv"
-
 # Audio/video processing
 brew "ffmpeg"
 
-# JSON processor
+# JSON processor (required for transcription output)
 brew "jq"
 
 # Optional: useful for development
